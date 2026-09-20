@@ -1,6 +1,5 @@
 import { useState } from "react";
 
-// Two depositions from the same witness, 6 months apart
 const TRANSCRIPT_1 = `
 Deposition of Marcus Webb — March 14, 2023
 
@@ -45,6 +44,12 @@ Q: And Daniel Cho — did you know him?
 A: I knew of him. We had mutual friends. I don't think I'd met him face to face.
 `;
 
+const TYPE_COLORS = {
+  DIRECT: { border: "#ef4444", bg: "#fee2e2" },
+  INFERENTIAL: { border: "#f59e0b", bg: "#fef3c7" },
+  FALSE_POSITIVE: { border: "#9ca3af", bg: "#f3f4f6" },
+};
+
 export default function DepositionChecker() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
@@ -56,33 +61,20 @@ export default function DepositionChecker() {
     setResults(null);
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      // Calls OUR OWN backend now, not Anthropic directly.
+      // The backend holds the API key and runs our classification logic.
+      const res = await fetch("http://localhost:3001/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [
-            {
-              role: "user",
-              content: `Find contradictions between these two depositions from the same witness. 
-            
-Transcript 1: ${TRANSCRIPT_1}
-
-Transcript 2: ${TRANSCRIPT_2}
-
-Return a JSON array of contradictions like: [{claim1, claim2, type, severity}]
-Types: DIRECT, INFERENTIAL, or FALSE_POSITIVE
-Severity: HIGH, MEDIUM, LOW`,
-            },
-          ],
+          transcript1: TRANSCRIPT_1,
+          transcript2: TRANSCRIPT_2,
         }),
       });
 
       const data = await res.json();
-      const text = data.content[0].text;
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setResults(parsed);
+      if (data.error) throw new Error(data.error);
+      setResults(data.results);
     } catch (e) {
       setError("Failed: " + e.message);
     }
@@ -158,48 +150,58 @@ Severity: HIGH, MEDIUM, LOW`,
       {results && (
         <div style={{ marginTop: 24 }}>
           <h2>Results ({results.length} found)</h2>
-          {results.map((r, i) => (
-            <div
-              key={i}
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 8,
-                padding: 16,
-                marginBottom: 12,
-                borderLeft: `4px solid ${r.type === "DIRECT" ? "#ef4444" : r.type === "INFERENTIAL" ? "#f59e0b" : "#9ca3af"}`,
-              }}
-            >
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <span
+          {results.map((r, i) => {
+            const colors = TYPE_COLORS[r.type] || TYPE_COLORS.FALSE_POSITIVE;
+            return (
+              <div
+                key={i}
+                style={{
+                  border: "1px solid #ddd",
+                  borderRadius: 8,
+                  padding: 16,
+                  marginBottom: 12,
+                  borderLeft: `4px solid ${colors.border}`,
+                }}
+              >
+                <div
                   style={{
-                    background:
-                      r.type === "DIRECT"
-                        ? "#fee2e2"
-                        : r.type === "INFERENTIAL"
-                          ? "#fef3c7"
-                          : "#f3f4f6",
-                    padding: "2px 8px",
-                    borderRadius: 4,
-                    fontSize: 12,
-                    fontWeight: "bold",
+                    display: "flex",
+                    gap: 8,
+                    marginBottom: 8,
+                    alignItems: "center",
                   }}
                 >
-                  {r.type}
-                </span>
-                <span style={{ fontSize: 12, color: "#666" }}>
-                  Severity: {r.severity}
-                </span>
-              </div>
-              <div style={{ fontSize: 14 }}>
-                <div style={{ marginBottom: 4 }}>
-                  <strong>March:</strong> "{r.claim1}"
+                  <span
+                    style={{
+                      background: colors.bg,
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {r.type}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#666" }}>
+                    Confidence: {(r.confidence * 100).toFixed(0)}%
+                  </span>
                 </div>
-                <div>
-                  <strong>September:</strong> "{r.claim2}"
+                <div style={{ fontSize: 14, marginBottom: 6 }}>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>March:</strong> "{r.claim1}"
+                  </div>
+                  <div>
+                    <strong>September:</strong> "{r.claim2}"
+                  </div>
+                </div>
+                <div
+                  style={{ fontSize: 12, color: "#666", fontStyle: "italic" }}
+                >
+                  {r.reasoning}
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
