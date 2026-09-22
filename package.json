@@ -1,0 +1,27 @@
+{
+  "name": "bli-application",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "backend": "node backend/index.js",
+    "client": "cd client && npm run dev",
+    "start": "concurrently npm:backend npm:client"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Veer03/BLI-application.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Veer03/BLI-application/issues"
+  },
+  "homepage": "https://github.com/Veer03/BLI-application#readme",
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
