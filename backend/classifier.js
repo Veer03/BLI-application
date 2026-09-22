@@ -1,8 +1,6 @@
 // classifier.js
 // Takes LLM-extracted candidate facts and independently decides
 // type + confidence. The LLM never sees or influences these numbers.
-// Parses the witness's own words (claim1/claim2), not the LLM's
-// normalized value1/value2 — keeps the math independent of LLM output.
 
 const STRONG_HEDGES = [
   "i think",
@@ -29,15 +27,11 @@ function countHedges(text = "") {
   return HEDGE_WORDS.filter((h) => lower.includes(h)).length;
 }
 
-// Only hedges that cast doubt on the whole claim (not just a number)
-// count here — "around 7" shouldn't weaken a home-vs-out contradiction.
 function countStrongHedges(text = "") {
   const lower = text.toLowerCase();
   return STRONG_HEDGES.filter((h) => lower.includes(h)).length;
 }
 
-// Parses loose time expressions into minutes-since-midnight.
-// Handles "10", "10:30", "midnight", "noon", "7pm", etc.
 function parseTimeToMinutes(text = "") {
   const lower = text.toLowerCase();
   if (lower.includes("midnight")) return 24 * 60;
@@ -52,16 +46,12 @@ function parseTimeToMinutes(text = "") {
 
   if (meridian === "pm" && hour < 12) hour += 12;
   if (meridian === "am" && hour === 12) hour = 0;
-  // Only apply the "assume evening" heuristic to bare hours like "10" —
-  // never to something already in 24h form (hour > 12) or explicit am/pm.
   if (!meridian && hour >= 1 && hour <= 11) hour += 12;
 
   return hour * 60 + min;
 }
 
 function classifyTemporal(candidate) {
-  // Parse the witness's own words, not the LLM's normalized guess —
-  // keeps classification independent of LLM output, per the hard rule.
   const t1 = parseTimeToMinutes(candidate.claim1);
   const t2 = parseTimeToMinutes(candidate.claim2);
   if (t1 == null || t2 == null) return classifyOther(candidate);
@@ -93,31 +83,65 @@ function classifyTemporal(candidate) {
   };
 }
 
-function classifyBoolean(candidate) {
-  const v1 = candidate.value1?.toLowerCase();
-  const v2 = candidate.value2?.toLowerCase();
-  const hedges1 = countHedges(candidate.claim1);
-  const hedges2 = countHedges(candidate.claim2);
-  const sameValue = v1 === v2;
+function detectBooleanSignal(text = "") {
+  const lower = " " + text.toLowerCase().trim() + " ";
 
-  if (sameValue) {
+  if (
+    /didn't say (i'd|i had|i) never|not saying (i'd|i had|i) never/.test(lower)
+  ) {
+    return "yes";
+  }
+
+  const firstWord = lower.trim().split(/\s+/)[0]?.replace(/[.,]/g, "");
+  if (firstWord === "no") return "no";
+  if (firstWord === "yes") return "yes";
+
+  if (/\bmight\b|\bcould\b|\bpossibly\b|\bperhaps\b/.test(lower))
+    return "hedged";
+
+  if (
+    /\bi (knew|did|had|owned|have|was)\b/.test(lower) ||
+    /\bi've\b.*\b(driven|been|visited|seen)\b/.test(lower)
+  ) {
+    return "yes";
+  }
+  if (
+    /\bnever\b|\bdon't\b|\bdoesn't\b|\bdidn't\b|\bnot\b|\bno idea\b/.test(lower)
+  ) {
+    return "no";
+  }
+
+  return "unknown";
+}
+
+function classifyBoolean(candidate) {
+  const v1 = detectBooleanSignal(candidate.claim1);
+  const v2 = detectBooleanSignal(candidate.claim2);
+
+  if (v1 === "unknown" || v2 === "unknown") {
+    return classifyOther(candidate);
+  }
+
+  if (v1 === v2) {
     return {
       type: "FALSE_POSITIVE",
       confidence: 0.7,
       reasoning: "Both statements resolve to the same underlying fact.",
     };
   }
-  if (hedges1 + hedges2 === 0) {
+
+  if (v1 === "hedged" || v2 === "hedged") {
     return {
-      type: "DIRECT",
-      confidence: 0.9,
-      reasoning: `Flat, unhedged opposite answers ("${candidate.value1}" vs "${candidate.value2}").`,
+      type: "INFERENTIAL",
+      confidence: 0.65,
+      reasoning: `One answer is uncertain/hedged ("${candidate.claim1}" / "${candidate.claim2}") — a possible conflict, not a flat denial.`,
     };
   }
+
   return {
-    type: "INFERENTIAL",
-    confidence: clamp(0.55 + (hedges1 + hedges2) * 0.05, 0.55, 0.8),
-    reasoning: `Answers point opposite ways but are qualified/hedged — requires inference, not a flat denial.`,
+    type: "DIRECT",
+    confidence: 0.9,
+    reasoning: `Flat, unhedged opposite answers ("${candidate.claim1}" vs "${candidate.claim2}").`,
   };
 }
 
@@ -144,9 +168,6 @@ function classifyNumeric(candidate) {
 }
 
 function classifyOther(candidate) {
-  // Only STRONG hedges (doubt on the whole claim) weaken classification here.
-  // Weak numeric qualifiers like "around 7" shouldn't soften a clean
-  // home-vs-went-out contradiction.
   const hedges =
     countStrongHedges(candidate.claim1) + countStrongHedges(candidate.claim2);
   if (hedges >= 2) {
