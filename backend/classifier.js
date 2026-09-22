@@ -1,31 +1,43 @@
 // classifier.js
 // Takes LLM-extracted candidate facts and independently decides
 // type + confidence. The LLM never sees or influences these numbers.
+// Parses the witness's own words (claim1/claim2), not the LLM's
+// normalized value1/value2 — keeps the math independent of LLM output.
 
-const HEDGE_WORDS = [
-  "maybe",
-  "around",
+const STRONG_HEDGES = [
   "i think",
   "might",
   "probably",
   "i believe",
   "i guess",
-  "sort of",
-  "kind of",
   "not sure",
   "i don't remember",
+];
+const NUMERIC_QUALIFIERS = [
+  "maybe",
+  "around",
   "roughly",
   "about",
   "or so",
+  "sort of",
+  "kind of",
 ];
+const HEDGE_WORDS = [...STRONG_HEDGES, ...NUMERIC_QUALIFIERS];
 
 function countHedges(text = "") {
   const lower = text.toLowerCase();
   return HEDGE_WORDS.filter((h) => lower.includes(h)).length;
 }
 
+// Only hedges that cast doubt on the whole claim (not just a number)
+// count here — "around 7" shouldn't weaken a home-vs-out contradiction.
+function countStrongHedges(text = "") {
+  const lower = text.toLowerCase();
+  return STRONG_HEDGES.filter((h) => lower.includes(h)).length;
+}
+
 // Parses loose time expressions into minutes-since-midnight.
-// Handles "10", "10:30", "midnight", "noon", ranges like "10-10:30".
+// Handles "10", "10:30", "midnight", "noon", "7pm", etc.
 function parseTimeToMinutes(text = "") {
   const lower = text.toLowerCase();
   if (lower.includes("midnight")) return 24 * 60;
@@ -40,16 +52,18 @@ function parseTimeToMinutes(text = "") {
 
   if (meridian === "pm" && hour < 12) hour += 12;
   if (meridian === "am" && hour === 12) hour = 0;
-  // No am/pm given: assume evening context (7-11 -> pm) since these
-  // are deposition "what time did X happen" questions about one evening.
+  // Only apply the "assume evening" heuristic to bare hours like "10" —
+  // never to something already in 24h form (hour > 12) or explicit am/pm.
   if (!meridian && hour >= 1 && hour <= 11) hour += 12;
 
   return hour * 60 + min;
 }
 
 function classifyTemporal(candidate) {
-  const t1 = parseTimeToMinutes(candidate.value1);
-  const t2 = parseTimeToMinutes(candidate.value2);
+  // Parse the witness's own words, not the LLM's normalized guess —
+  // keeps classification independent of LLM output, per the hard rule.
+  const t1 = parseTimeToMinutes(candidate.claim1);
+  const t2 = parseTimeToMinutes(candidate.claim2);
   if (t1 == null || t2 == null) return classifyOther(candidate);
 
   const deltaMin = Math.abs(t1 - t2);
@@ -62,17 +76,20 @@ function classifyTemporal(candidate) {
       reasoning: `Times differ by only ${deltaMin} min — within normal recall imprecision.`,
     };
   }
-  if (deltaMin <= 90 && hedges > 0) {
+  if (deltaMin <= 150 && hedges > 0) {
     return {
       type: "INFERENTIAL",
-      confidence: clamp(0.5 + deltaMin / 200, 0.5, 0.85),
-      reasoning: `${deltaMin} min gap combined with hedged language ("${candidate.claim1}" / "${candidate.claim2}") — individually plausible, but logically hard to reconcile.`,
+      confidence: clamp(0.5 + deltaMin / 300, 0.5, 0.85),
+      reasoning: `${deltaMin} min gap, both statements hedged ("${candidate.claim1}" / "${candidate.claim2}") — individually plausible, conflict only emerges when combined.`,
     };
   }
   return {
     type: "DIRECT",
     confidence: clamp(0.6 + deltaMin / 180, 0.6, 0.97),
-    reasoning: `Times differ by ${deltaMin} min with no hedging — direct factual conflict.`,
+    reasoning:
+      hedges > 0
+        ? `Times differ by ${deltaMin} min — gap too large to be explained by hedging alone.`
+        : `Times differ by ${deltaMin} min with no hedging — direct factual conflict.`,
   };
 }
 
@@ -127,7 +144,11 @@ function classifyNumeric(candidate) {
 }
 
 function classifyOther(candidate) {
-  const hedges = countHedges(candidate.claim1) + countHedges(candidate.claim2);
+  // Only STRONG hedges (doubt on the whole claim) weaken classification here.
+  // Weak numeric qualifiers like "around 7" shouldn't soften a clean
+  // home-vs-went-out contradiction.
+  const hedges =
+    countStrongHedges(candidate.claim1) + countStrongHedges(candidate.claim2);
   if (hedges >= 2) {
     return {
       type: "INFERENTIAL",
